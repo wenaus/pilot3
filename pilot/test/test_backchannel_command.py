@@ -354,6 +354,17 @@ class TestExportDebugMode(unittest.TestCase):
                 self.send('debug')
         self.assertFalse(os.path.exists(self.path))
 
+    def test_config_without_the_setting_uses_the_default_name(self):
+        """Test that a site configuration lacking debug_mode_file still exports the file."""
+        section = job_module.config.Pilot
+        saved = section.__dict__.pop('debug_mode_file', None)
+        try:
+            self.send('debug')
+            self.assertTrue(os.path.exists(os.path.join(self.tmpdir.name, 'pilot_debug_mode.json')))
+        finally:
+            if saved is not None:
+                section.__dict__['debug_mode_file'] = saved
+
     def test_debugoff_turns_debug_off(self):
         """Test that 'debugoff' clears job.debug (it used to match the 'debug' branch first)."""
         self.send('debug')
