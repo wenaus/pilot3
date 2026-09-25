@@ -859,17 +859,22 @@ def extract_backchannel_data(res: dict) -> dict:
     return merged
 
 
-DEBUG_MODE_FILE = 'pilot_debug_mode.json'
-
-
 def export_debug_mode(res: dict, job: Any) -> None:
     """Mirror the server's debug mode into the job work directory for the payload.
 
     While a job's debug mode is on, the server puts 'debug' in the command of every
     accepted update response; when the mode is turned off it stops sending it (no
-    'debugoff' is sent). The file DEBUG_MODE_FILE therefore exists in the work
-    directory exactly while the latest accepted response carried 'debug', so a
-    payload can poll for it and raise its own reporting while the job is watched.
+    'debugoff' is sent). The file named by config.Pilot.debug_mode_file therefore
+    exists in the work directory exactly while the latest accepted response carried
+    'debug', so a payload can poll for it and raise its own reporting while the job
+    is watched.
+
+    The file mirrors the server's debug flag, not job.debug: a bare debug command
+    (e.g. 'tail pilotlog.txt') sets job.debug without debug mode on the server, and
+    job.debug is not cleared when the server stops sending 'debug'.
+
+    The file is written to a temporary name and renamed into place, so a polling
+    payload never reads it half-written.
 
     Args:
         res: normalized server response (see extract_backchannel_data()).
@@ -879,18 +884,28 @@ def export_debug_mode(res: dict, job: Any) -> None:
     if not workdir or not os.path.isdir(workdir):
         return
     tokens = [token.strip() for token in str(res.get('command') or '').split(',')]
-    path = os.path.join(workdir, DEBUG_MODE_FILE)
-    try:
-        if 'debug' in tokens:
-            if not os.path.exists(path):
-                write_json(path, {'debug': True, 'since': int(time.time()),
-                                  'heartbeat': get_heartbeat_period(debug=True)})
-                logger.info(f'debug mode on: wrote {path} for the payload')
-        elif os.path.exists(path):
+    path = os.path.join(workdir, config.Pilot.debug_mode_file)
+    if 'debug' in tokens:
+        if os.path.exists(path):
+            return
+        tmp_path = f'{path}.tmp'
+        if not write_json(tmp_path, {'debug': True, 'since': int(time.time()),
+                                     'heartbeat': get_heartbeat_period(debug=True)}):
+            logger.warning(f'failed to write {tmp_path}; debug mode not exported to the payload')
+            return
+        try:
+            os.replace(tmp_path, path)
+        except OSError as exc:
+            logger.warning(f'failed to move {tmp_path} to {path}: {exc}')
+            return
+        logger.info(f'debug mode on: wrote {path} for the payload')
+    elif os.path.exists(path):
+        try:
             os.remove(path)
-            logger.info(f'debug mode off: removed {path}')
-    except OSError as exc:
-        logger.warning(f'failed to export debug mode to {path}: {exc}')
+        except OSError as exc:
+            logger.warning(f'failed to remove {path}: {exc}')
+            return
+        logger.info(f'debug mode off: removed {path}')
 
 
 def handle_backchannel_command(res: dict, job: Any, args: Any, test_tobekilled: bool = False) -> None:
@@ -942,14 +957,14 @@ def handle_backchannel_command(res: dict, job: Any, args: Any, test_tobekilled: 
             logger.info(f'pilot received a panda server signal to softkill job {job.jobid} at {time_stamp()}')
             # event service kill instruction
             job.debug_command = 'softkill'
+        elif 'debugoff' in cmd:  # before 'debug', which is a substring of it
+            logger.info('pilot received a command to turn off debug mode from the server')
+            job.debug = False
+            job.debug_command = 'debugoff'
         elif 'debug' in cmd:
             logger.info('pilot received a command to turn on standard debug mode from the server')
             job.debug = True
             job.debug_command = 'debug'
-        elif 'debugoff' in cmd:
-            logger.info('pilot received a command to turn off debug mode from the server')
-            job.debug = False
-            job.debug_command = 'debugoff'
         elif 'nocleanup' in cmd:
             logger.info('pilot received a command to turn off workdir cleanup')
             args.cleanup = False
