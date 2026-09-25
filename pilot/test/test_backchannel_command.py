@@ -42,6 +42,7 @@ flat dict before handle_backchannel_command() looks at it.
 import json
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -292,14 +293,11 @@ class TestExportDebugMode(unittest.TestCase):
 
     def setUp(self):
         """Create a temporary work directory."""
-        self.tmpdir = tempfile.TemporaryDirectory()
-        self.job = FakeJob(self.tmpdir.name)
+        self.workdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.workdir, ignore_errors=True)
+        self.job = FakeJob(self.workdir)
         self.args = FakeArgs()
-        self.path = os.path.join(self.tmpdir.name, job_module.config.Pilot.debug_mode_file)
-
-    def tearDown(self):
-        """Remove the temporary work directory."""
-        self.tmpdir.cleanup()
+        self.path = os.path.join(self.workdir, job_module.config.Pilot.debug_mode_file)
 
     def send(self, command):
         """Pass one update response carrying the given command (None: no command field)."""
@@ -352,7 +350,14 @@ class TestExportDebugMode(unittest.TestCase):
         with patch.object(job_module, 'write_json', return_value=False):
             with self.assertLogs(job_module.logger, level='WARNING'):
                 self.send('debug')
-        self.assertFalse(os.path.exists(self.path))
+        self.assertEqual(os.listdir(self.workdir), [])
+
+    def test_failed_rename_leaves_no_temporary_file(self):
+        """Test that a failed rename is reported and removes the temporary file."""
+        with patch.object(job_module.os, 'replace', side_effect=OSError('simulated')):
+            with self.assertLogs(job_module.logger, level='WARNING'):
+                self.send('debug')
+        self.assertEqual(os.listdir(self.workdir), [])
 
     def test_config_without_the_setting_uses_the_default_name(self):
         """Test that a site configuration lacking debug_mode_file still exports the file."""
@@ -360,7 +365,7 @@ class TestExportDebugMode(unittest.TestCase):
         saved = section.__dict__.pop('debug_mode_file', None)
         try:
             self.send('debug')
-            self.assertTrue(os.path.exists(os.path.join(self.tmpdir.name, 'pilot_debug_mode.json')))
+            self.assertTrue(os.path.exists(os.path.join(self.workdir, 'pilot_debug_mode.json')))
         finally:
             if saved is not None:
                 section.__dict__['debug_mode_file'] = saved
