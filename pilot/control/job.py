@@ -884,7 +884,8 @@ def export_debug_mode(res: dict, job: Any) -> None:
     if not workdir or not os.path.isdir(workdir):
         return
     tokens = [token.strip() for token in str(res.get('command') or '').split(',')]
-    path = os.path.join(workdir, config.Pilot.debug_mode_file)
+    # a site configuration (HARVESTER_PILOT_CONFIG) may predate the setting
+    path = os.path.join(workdir, getattr(config.Pilot, 'debug_mode_file', 'pilot_debug_mode.json'))
     if 'debug' in tokens:
         if os.path.exists(path):
             return
