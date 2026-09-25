@@ -30,6 +30,7 @@ import os
 import hashlib
 import logging
 import queue
+import threading
 import time
 
 from collections import namedtuple
@@ -889,16 +890,24 @@ def export_debug_mode(res: dict, job: Any) -> None:
     if 'debug' in tokens:
         if os.path.exists(path):
             return
-        tmp_path = f'{path}.tmp'
-        if not write_json(tmp_path, {'debug': True, 'since': int(time.time()),
-                                     'heartbeat': get_heartbeat_period(debug=True)}):
-            logger.warning(f'failed to write {tmp_path}; debug mode not exported to the payload')
-            return
+        # unique per writer: updates can be sent from more than one pilot thread
+        tmp_path = f'{path}.{os.getpid()}.{threading.get_ident()}.tmp'
+        written = write_json(tmp_path, {'debug': True, 'since': int(time.time()),
+                                        'heartbeat': get_heartbeat_period(debug=True)})
         try:
+            if not written:
+                logger.warning(f'failed to write {tmp_path}; debug mode not exported to the payload')
+                return
             os.replace(tmp_path, path)
         except OSError as exc:
             logger.warning(f'failed to move {tmp_path} to {path}: {exc}')
             return
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError as exc:
+                    logger.warning(f'failed to remove {tmp_path}: {exc}')
         logger.info(f'debug mode on: wrote {path} for the payload')
     elif os.path.exists(path):
         try:
