@@ -859,6 +859,40 @@ def extract_backchannel_data(res: dict) -> dict:
     return merged
 
 
+DEBUG_MODE_FILE = 'pilot_debug_mode.json'
+
+
+def export_debug_mode(res: dict, job: Any) -> None:
+    """Mirror the server's debug mode into the job work directory for the payload.
+
+    While a job's debug mode is on, the server puts 'debug' in the command of every
+    accepted update response; when the mode is turned off it stops sending it (no
+    'debugoff' is sent). The file DEBUG_MODE_FILE therefore exists in the work
+    directory exactly while the latest accepted response carried 'debug', so a
+    payload can poll for it and raise its own reporting while the job is watched.
+
+    Args:
+        res: normalized server response (see extract_backchannel_data()).
+        job: job object.
+    """
+    workdir = getattr(job, 'workdir', '')
+    if not workdir or not os.path.isdir(workdir):
+        return
+    tokens = [token.strip() for token in str(res.get('command') or '').split(',')]
+    path = os.path.join(workdir, DEBUG_MODE_FILE)
+    try:
+        if 'debug' in tokens:
+            if not os.path.exists(path):
+                write_json(path, {'debug': True, 'since': int(time.time()),
+                                  'heartbeat': get_heartbeat_period(debug=True)})
+                logger.info(f'debug mode on: wrote {path} for the payload')
+        elif os.path.exists(path):
+            os.remove(path)
+            logger.info(f'debug mode off: removed {path}')
+    except OSError as exc:
+        logger.warning(f'failed to export debug mode to {path}: {exc}')
+
+
 def handle_backchannel_command(res: dict, job: Any, args: Any, test_tobekilled: bool = False) -> None:
     """Check if the server update contain any backchannel information. If so, update the job object.
 
@@ -921,6 +955,8 @@ def handle_backchannel_command(res: dict, job: Any, args: Any, test_tobekilled: 
             args.cleanup = False
         else:
             logger.warning(f'received unknown server command via backchannel: {cmd}')
+
+    export_debug_mode(res, job)
 
     # for testing debug mode
     # job.debug = True
