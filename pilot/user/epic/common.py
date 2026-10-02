@@ -27,7 +27,9 @@ import logging
 import os
 import re
 import ssl
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -71,9 +73,37 @@ errors = ErrorCodes()
 # Where a log whose transfer failed is held until production operations recover it. The grant service checks that
 # the job is live and the file is its log, and returns a presigned POST for that one object; no credential sits on
 # the worker. The object store needs no library beyond the standard one.
-LOG_GRANT_URL = 'https://epic-devcloud.org/prod/api/stageout/log-grant/'
+LOG_GRANT_URL = 'https://epic-devcloud.org/prod/pcs/api/v1/stageout/log-grant/'
 LOG_GRANT_TIMEOUT = 60
+LOG_GRANT_WAIT = 300
 LOG_UPLOAD_TIMEOUT = 600
+
+
+def _log_grant(url: str, pandaid: int, lfn: str, context: ssl.SSLContext) -> dict:
+    """Ask the grant service for this log's upload grant, waiting while it is signed (202).
+
+    Returns:
+        The grant, or an empty dict when none was given.
+    """
+    query = urllib.parse.urlencode({'pandaid': pandaid, 'lfn': lfn})
+    deadline = time.time() + LOG_GRANT_WAIT
+    while True:
+        try:
+            with urllib.request.urlopen(f'{url}?{query}', timeout=LOG_GRANT_TIMEOUT, context=context) as response:
+                body = json.loads(response.read().decode())
+                if response.status == 200:
+                    return body
+                wait = int(body.get('retry_after', 10))
+        except urllib.error.HTTPError as error:
+            logger.warning(f'log fallback: grant refused by {url}: HTTP {error.code} {error.read()[:300]!r}')
+            return {}
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            logger.warning(f'log fallback: no grant from {url}: {error}')
+            return {}
+        if time.time() + wait > deadline:
+            logger.warning(f'log fallback: no grant from {url} within {LOG_GRANT_WAIT} s')
+            return {}
+        time.sleep(wait)
 
 
 def _multipart_body(fields: dict, filename: str, data: bytes) -> tuple[bytes, str]:
@@ -108,16 +138,8 @@ def log_stageout_fallback(job: JobData, fspec: Any) -> bool:
 
     url = os.environ.get('EPICPROD_LOG_GRANT_URL', LOG_GRANT_URL)
     context = ssl.create_default_context()
-    request = urllib.request.Request(url, data=json.dumps({'pandaid': int(job.jobid), 'lfn': fspec.lfn}).encode(),
-                                     headers={'Content-Type': 'application/json'}, method='POST')
-    try:
-        with urllib.request.urlopen(request, timeout=LOG_GRANT_TIMEOUT, context=context) as response:
-            grant = json.loads(response.read().decode())
-    except urllib.error.HTTPError as error:
-        logger.warning(f'log fallback: grant refused by {url}: HTTP {error.code} {error.read()[:300]!r}')
-        return False
-    except (urllib.error.URLError, OSError, ValueError) as error:
-        logger.warning(f'log fallback: no grant from {url}: {error}')
+    grant = _log_grant(url, int(job.jobid), fspec.lfn, context)
+    if not grant:
         return False
 
     try:
