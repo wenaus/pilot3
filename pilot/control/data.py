@@ -1247,8 +1247,8 @@ def _stage_out_new(job: JobData, args: object) -> bool:
         add_to_pilot_timing(job.jobid, PILOT_POST_LOG_TAR, time.time(), args)
 
         codes_before = list(job.piloterrorcodes)
-        if not (_do_stageout(job, args, [logfile], ['pl'] + activities, title='log', ipv=args.internet_protocol_version)
-                or _log_stageout_fallback(job, logfile, codes_before)):
+        if not (_do_stageout(job, args, [logfile], ['pl'] + activities, title='log', ipv=args.internet_protocol_version) or
+                _log_stageout_fallback(job, logfile, codes_before)):
             is_success = False
             logger.warning('log transfer failed')
             job.status['LOG_TRANSFER'] = LOG_TRANSFER_FAILED
