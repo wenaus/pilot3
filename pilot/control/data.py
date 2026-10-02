@@ -1133,6 +1133,32 @@ def _do_stageout(job: JobData, args: object, xdata: list, activity: list, title:
     return not remain_files
 
 
+def _log_stageout_fallback(job: JobData, logfile: Any) -> bool:
+    """Hand a log whose transfer failed to the pilot user's fallback, if it has one.
+
+    Args:
+        job: Job object.
+        logfile: FileSpec of the log file.
+
+    Returns:
+        True if the user plugin took the log, False otherwise.
+    """
+    pilot_user = os.environ.get('PILOT_USER', 'generic').lower()
+    try:
+        user = __import__(f'pilot.user.{pilot_user}.common', globals(), locals(), [pilot_user], 0)
+    except ImportError as error:
+        logger.warning(f'no user module for the log stage-out fallback: {error}')
+        return False
+    fallback = getattr(user, 'log_stageout_fallback', None)
+    if fallback is None:
+        return False
+    try:
+        return bool(fallback(job, logfile))
+    except Exception as error:
+        logger.warning(f'log stage-out fallback failed: {error}')
+        return False
+
+
 def _stage_out_new(job: JobData, args: object) -> bool:
     """Stage out all output files for a job.
 
@@ -1210,11 +1236,19 @@ def _stage_out_new(job: JobData, args: object) -> bool:
         # write time stamps to pilot timing file
         add_to_pilot_timing(job.jobid, PILOT_POST_LOG_TAR, time.time(), args)
 
+        codes_before = list(job.piloterrorcodes)
         if not _do_stageout(job, args, [logfile], ['pl'] + activities, title='log',
                             ipv=args.internet_protocol_version):
-            is_success = False
-            logger.warning('log transfer failed')
-            job.status['LOG_TRANSFER'] = LOG_TRANSFER_FAILED
+            if _log_stageout_fallback(job, logfile):
+                # the log is held where the experiment recovers it; its failed transfer does not fail the job
+                for code in [code for code in job.piloterrorcodes if code not in codes_before]:
+                    errors.remove_error_code(code)
+                logger.warning('log transfer failed; the log is held by the experiment fallback')
+                job.status['LOG_TRANSFER'] = LOG_TRANSFER_DONE
+            else:
+                is_success = False
+                logger.warning('log transfer failed')
+                job.status['LOG_TRANSFER'] = LOG_TRANSFER_FAILED
         else:
             job.status['LOG_TRANSFER'] = LOG_TRANSFER_DONE
     elif not job.logdata:
