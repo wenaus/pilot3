@@ -64,6 +64,31 @@ from .utilities import (
 logger = logging.getLogger(__name__)
 errors = ErrorCodes()
 
+# The ePIC Rucio client configuration and account. The queue's CRIC environ normally
+# supplies both; when the wrapper's fetch of it fails, the client would otherwise take
+# whatever configuration the middleware setup left (ATLAS's, under ALRB).
+EPIC_RUCIO_CONFIG = '/cvmfs/eic.opensciencegrid.org/rucio-clients/rucio.cfg'
+EPIC_RUCIO_ACCOUNT = 'panda'
+
+
+def ensure_rucio_config() -> None:
+    """Make the Rucio client use the ePIC configuration when the environment does not name one."""
+    current = os.environ.get('RUCIO_CONFIG', '')
+    if current and os.path.exists(current):
+        logger.info(f'RUCIO_CONFIG={current} (from the environment)')
+    elif os.path.exists(EPIC_RUCIO_CONFIG):
+        if current:
+            logger.warning(f'RUCIO_CONFIG={current} does not exist; using {EPIC_RUCIO_CONFIG}')
+        else:
+            logger.warning(f'RUCIO_CONFIG not set (queue environ not received?); using {EPIC_RUCIO_CONFIG}')
+        os.environ['RUCIO_CONFIG'] = EPIC_RUCIO_CONFIG
+    else:
+        logger.warning(f'no usable RUCIO_CONFIG and {EPIC_RUCIO_CONFIG} is not available; '
+                       f'the Rucio client falls back to RUCIO_HOME={os.environ.get("RUCIO_HOME", "")}')
+    if not os.environ.get('RUCIO_ACCOUNT'):
+        logger.warning(f'RUCIO_ACCOUNT not set; using {EPIC_RUCIO_ACCOUNT}')
+        os.environ['RUCIO_ACCOUNT'] = EPIC_RUCIO_ACCOUNT
+
 
 def sanity_check() -> int:
     """Perform an initial sanity check before doing anything else in a given workflow.
@@ -74,6 +99,7 @@ def sanity_check() -> int:
     Returns:
         int: exit code (0 if all is ok, otherwise non-zero exit code).
     """
+    ensure_rucio_config()
     return 0
 
 
